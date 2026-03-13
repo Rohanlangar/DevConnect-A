@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getWebSocketURL } from "../services/api";
+import { apiFetch, getWebSocketURL } from "../services/api";
 import "./ChatRoom.css";
 
 export default function ChatRoom() {
@@ -13,47 +13,90 @@ export default function ChatRoom() {
     const wsRef = useRef(null);
     const messagesEndRef = useRef(null);
 
+    const [fetchingHistory, setFetchingHistory] = useState(true);
+
     // Get current username from localStorage or profile
     useEffect(() => {
         const storedUser = localStorage.getItem("username");
         if (storedUser) setCurrentUser(storedUser);
     }, []);
 
-    // WebSocket connection
+    // Fetch history then connect WebSocket
     useEffect(() => {
-        const wsUrl = getWebSocketURL(roomId);
-        const ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
+        let ws;
+        let isMounted = true;
 
-        ws.onopen = () => {
-            setConnected(true);
+        const initializeChat = async () => {
+            console.log("Initializing chat for roomId:", roomId);
+            // 1. Fetch History
+            try {
+                console.log("Fetching history from:", `/room/getAllMsg/${roomId}/`);
+                const { ok, data } = await apiFetch(`/room/getAllMsg/${roomId}/`);
+                console.log("Fetch history response:", { ok, data });
+                
+                if (!isMounted) return; // Stop if component unmounted during fetch
+
+                if (ok && Array.isArray(data)) {
+                    const formattedHistory = data.map(msg => {
+                        // The backend returns timestamp as msg.created_at
+                        const dateObj = new Date(msg.created_at);
+                        const timeStr = isNaN(dateObj) ? "" : dateObj.toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                        });
+
+                        return {
+                            user: msg.sender, // Backend returns sender ID or string
+                            message: msg.content,
+                            time: timeStr
+                        };
+                    });
+                    setMessages(formattedHistory);
+                }
+            } catch (err) {
+                if (isMounted) console.error("Failed to load message history:", err);
+            } finally {
+                if (isMounted) setFetchingHistory(false);
+            }
+
+            if (!isMounted) return;
+
+            // 2. Connect WebSocket
+            const wsUrl = getWebSocketURL(roomId);
+            ws = new WebSocket(wsUrl);
+            wsRef.current = ws;
+
+            ws.onopen = () => {
+                if (isMounted) setConnected(true);
+            };
+            ws.onclose = () => {
+                if (isMounted) setConnected(false);
+            };
+            ws.onerror = () => {
+                if (isMounted) setConnected(false);
+            };
+
+            ws.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                setMessages((prev) => [
+                    ...prev,
+                    {
+                        user: data.user,
+                        message: data.message,
+                        time: new Date().toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                        }),
+                    },
+                ]);
+            };
         };
 
-        ws.onmessage = (e) => {
-            const data = JSON.parse(e.data);
-            setMessages((prev) => [
-                ...prev,
-                {
-                    user: data.user,
-                    message: data.message,
-                    time: new Date().toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                    }),
-                },
-            ]);
-        };
-
-        ws.onclose = () => {
-            setConnected(false);
-        };
-
-        ws.onerror = () => {
-            setConnected(false);
-        };
+        initializeChat();
 
         return () => {
-            ws.close();
+            isMounted = false;
+            if (ws) ws.close();
         };
     }, [roomId]);
 
@@ -98,7 +141,12 @@ export default function ChatRoom() {
 
             {/* Messages */}
             <div className="chat-messages">
-                {messages.length === 0 ? (
+                {fetchingHistory ? (
+                    <div className="chat-empty">
+                        <span className="spinner"></span>
+                        <div className="chat-empty-text">Loading history...</div>
+                    </div>
+                ) : messages.length === 0 ? (
                     <div className="chat-empty">
                         <div className="chat-empty-icon">💬</div>
                         <div className="chat-empty-text">

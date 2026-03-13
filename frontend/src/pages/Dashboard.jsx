@@ -5,18 +5,38 @@ import Navbar from "../components/Navbar";
 import "./Dashboard.css";
 
 export default function Dashboard() {
-    const [rooms, setRooms] = useState([]);
+    const [joinedRooms, setJoinedRooms] = useState([]);
+    const [availableRooms, setAvailableRooms] = useState([]);
     const [showCreateModal, setShowCreateModal] = useState(false);
-    const [showJoinModal, setShowJoinModal] = useState(false);
     const [newRoomName, setNewRoomName] = useState("");
     const [newRoomDesc, setNewRoomDesc] = useState("");
-    const [joinRoomId, setJoinRoomId] = useState("");
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
+    const [fetching, setFetching] = useState(true);
     const navigate = useNavigate();
 
-    // For now, we keep rooms in local state since there's no list endpoint
-    // Rooms are added when created or joined
+    // Fetch rooms on mount
+    useEffect(() => {
+        fetchRooms();
+    }, []);
+
+    const fetchRooms = async () => {
+        setFetching(true);
+        try {
+            // Fetch both endpoints in parallel
+            const [joinedRes, availableRes] = await Promise.all([
+                apiFetch("/room/JoinedRooms/"),
+                apiFetch("/room/getAllRoom/")
+            ]);
+
+            if (joinedRes.ok) setJoinedRooms(joinedRes.data || []);
+            if (availableRes.ok) setAvailableRooms(availableRes.data || []);
+        } catch {
+            setError("Failed to load rooms. Is the server running?");
+        } finally {
+            setFetching(false);
+        }
+    };
 
     const handleCreateRoom = async (e) => {
         e.preventDefault();
@@ -24,13 +44,14 @@ export default function Dashboard() {
         setLoading(true);
 
         try {
-            const { data } = await apiFetch("/room/createRoom/", {
+            const { data, ok } = await apiFetch("/room/createRoom/", {
                 method: "POST",
                 body: JSON.stringify({ name: newRoomName, description: newRoomDesc }),
             });
 
-            if (data.room_id) {
-                setRooms((prev) => [
+            if (ok && data.room_id) {
+                // Instantly add to joined rooms list
+                setJoinedRooms((prev) => [
                     ...prev,
                     {
                         id: data.room_id,
@@ -51,41 +72,30 @@ export default function Dashboard() {
         }
     };
 
-    const handleJoinRoom = async (e) => {
-        e.preventDefault();
+    const handleJoinRoom = async (roomId) => {
         setError("");
-        setLoading(true);
+        
+        // Optimistically move it in UI to feel fast
+        const roomToJoin = availableRooms.find(r => r.id === roomId);
+        if (roomToJoin) {
+            setAvailableRooms(prev => prev.filter(r => r.id !== roomId));
+            setJoinedRooms(prev => [...prev, roomToJoin]);
+        }
 
         try {
-            const { data } = await apiFetch("/room/joinroom/", {
+            const { ok, data } = await apiFetch("/room/joinroom/", {
                 method: "POST",
-                body: JSON.stringify({ room_id: joinRoomId }),
+                body: JSON.stringify({ room_id: roomId }),
             });
 
-            const msg = data.Message || data.message || "";
-            if (
-                msg.toLowerCase().includes("joined") ||
-                msg.toLowerCase().includes("already")
-            ) {
-                // Add to local list and navigate
-                setRooms((prev) => {
-                    if (prev.find((r) => String(r.id) === String(joinRoomId)))
-                        return prev;
-                    return [
-                        ...prev,
-                        { id: joinRoomId, name: `Room #${joinRoomId}`, description: "" },
-                    ];
-                });
-                setJoinRoomId("");
-                setShowJoinModal(false);
-                navigate(`/room/${joinRoomId}`);
-            } else {
-                setError(msg || "Failed to join room");
+            if (!ok) {
+                // Revert if API call fails
+                fetchRooms();
+                setError(data?.message || "Failed to join room");
             }
         } catch {
-            setError("Network error");
-        } finally {
-            setLoading(false);
+            fetchRooms(); // Revert on network error
+            setError("Network error joining room");
         }
     };
 
@@ -93,26 +103,61 @@ export default function Dashboard() {
         navigate(`/room/${roomId}`);
     };
 
+    const renderRoomCard = (room, isJoined, idx) => (
+        <div
+            key={room.id}
+            className={`room-card glass-card ${!isJoined ? 'available-room' : ''}`}
+            onClick={isJoined ? () => openRoom(room.id) : undefined}
+            style={{ animationDelay: `${idx * 0.05}s`, cursor: isJoined ? 'pointer' : 'default' }}
+        >
+            <div className="room-card-header">
+                <div className="room-icon">
+                    {room.name?.charAt(0)?.toUpperCase() || "#"}
+                </div>
+                <span className="room-id-badge">#{room.id}</span>
+            </div>
+            <div className="room-name">{room.name}</div>
+            <div className="room-desc">
+                {room.description || "No description provided"}
+            </div>
+            <div className="room-footer" style={{ borderTop: isJoined ? '' : 'none' }}>
+                {isJoined ? (
+                    <>
+                        <span className="room-meta">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                            </svg>
+                            Chat
+                        </span>
+                        <span className="room-enter">
+                            Enter →
+                        </span>
+                    </>
+                ) : (
+                    <button 
+                        className="btn btn-primary" 
+                        style={{ width: '100%', padding: '10px' }}
+                        onClick={(e) => {
+                            e.stopPropagation(); // prevent card click
+                            handleJoinRoom(room.id);
+                        }}
+                    >
+                        Join Room
+                    </button>
+                )}
+            </div>
+        </div>
+    );
+
     return (
         <>
             <Navbar />
             <div className="dashboard">
                 <div className="dashboard-header">
                     <h1 className="dashboard-title">
-                        <span className="accent">~/</span>rooms
+                        <span className="accent">~/</span>dashboard
                     </h1>
                     <div className="dashboard-actions">
-                        <button
-                            className="btn btn-secondary"
-                            onClick={() => setShowJoinModal(true)}
-                        >
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-                                <polyline points="10 17 15 12 10 7" />
-                                <line x1="15" y1="12" x2="3" y2="12" />
-                            </svg>
-                            Join Room
-                        </button>
                         <button
                             className="btn btn-primary"
                             onClick={() => setShowCreateModal(true)}
@@ -126,48 +171,47 @@ export default function Dashboard() {
                     </div>
                 </div>
 
-                {rooms.length === 0 ? (
-                    <div className="empty-state glass-card">
-                        <div className="empty-icon">💬</div>
-                        <div className="empty-title">No rooms yet</div>
-                        <p className="empty-text">
-                            Create a new room to start collaborating, or join an existing room
-                            with its ID.
-                        </p>
+                {error && <div className="auth-error" style={{marginBottom: '20px'}}>⚠ {error}</div>}
+
+                {fetching ? (
+                    <div className="empty-state">
+                        <span className="spinner" style={{margin: '0 auto', display: 'block'}}></span>
+                        <div className="empty-title" style={{marginTop: '16px'}}>Syncing workspace...</div>
                     </div>
                 ) : (
-                    <div className="rooms-grid">
-                        {rooms.map((room, idx) => (
-                            <div
-                                key={room.id}
-                                className="room-card glass-card"
-                                onClick={() => openRoom(room.id)}
-                                style={{ animationDelay: `${idx * 0.05}s` }}
-                            >
-                                <div className="room-card-header">
-                                    <div className="room-icon">
-                                        {room.name?.charAt(0)?.toUpperCase() || "#"}
-                                    </div>
-                                    <span className="room-id-badge">#{room.id}</span>
+                    <>
+                        {/* Section: My Rooms */}
+                        <div className="room-section" style={{marginBottom: '48px'}}>
+                            <h2 style={{fontFamily: 'var(--font-mono)', fontSize: '1.2rem', marginBottom: '20px', color: 'var(--text-bright)'}}>
+                                <span className="accent">►</span> My Rooms ({joinedRooms.length})
+                            </h2>
+                            {joinedRooms.length === 0 ? (
+                                <div className="empty-state glass-card" style={{padding: '32px'}}>
+                                    <div className="empty-text">You haven&apos;t joined any rooms yet. Join one from the available rooms below or create your own!</div>
                                 </div>
-                                <div className="room-name">{room.name}</div>
-                                <div className="room-desc">
-                                    {room.description || "No description provided"}
+                            ) : (
+                                <div className="rooms-grid">
+                                    {joinedRooms.map((room, idx) => renderRoomCard(room, true, idx))}
                                 </div>
-                                <div className="room-footer">
-                                    <span className="room-meta">
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                                        </svg>
-                                        Chat
-                                    </span>
-                                    <span className="room-enter">
-                                        Enter →
-                                    </span>
+                            )}
+                        </div>
+
+                        {/* Section: Available Rooms */}
+                        <div className="room-section">
+                            <h2 style={{fontFamily: 'var(--font-mono)', fontSize: '1.2rem', marginBottom: '20px', color: 'var(--text-secondary)'}}>
+                                <span className="accent" style={{color: 'var(--text-muted)'}}>►</span> Available Rooms ({availableRooms.length})
+                            </h2>
+                            {availableRooms.length === 0 ? (
+                                <div className="empty-state glass-card" style={{padding: '32px'}}>
+                                    <div className="empty-text">No other rooms available to join right now.</div>
                                 </div>
-                            </div>
-                        ))}
-                    </div>
+                            ) : (
+                                <div className="rooms-grid">
+                                    {availableRooms.map((room, idx) => renderRoomCard(room, false, idx))}
+                                </div>
+                            )}
+                        </div>
+                    </>
                 )}
             </div>
 
@@ -183,7 +227,6 @@ export default function Dashboard() {
                         <div className="modal-title">
                             <span className="accent">+</span> Create Room
                         </div>
-                        {error && <div className="auth-error">⚠ {error}</div>}
                         <div className="form-group">
                             <label className="form-label">room name</label>
                             <input
@@ -216,47 +259,6 @@ export default function Dashboard() {
                             </button>
                             <button type="submit" className="btn btn-primary" disabled={loading}>
                                 {loading ? <span className="spinner"></span> : "Create"}
-                            </button>
-                        </div>
-                    </form>
-                </div>
-            )}
-
-            {/* Join Room Modal */}
-            {showJoinModal && (
-                <div
-                    className="modal-overlay"
-                    onClick={(e) =>
-                        e.target === e.currentTarget && setShowJoinModal(false)
-                    }
-                >
-                    <form className="modal glass-card" onSubmit={handleJoinRoom}>
-                        <div className="modal-title">
-                            <span className="accent">→</span> Join Room
-                        </div>
-                        {error && <div className="auth-error">⚠ {error}</div>}
-                        <div className="form-group">
-                            <label className="form-label">room id</label>
-                            <input
-                                type="text"
-                                className="input-field"
-                                placeholder="Enter room ID"
-                                value={joinRoomId}
-                                onChange={(e) => setJoinRoomId(e.target.value)}
-                                required
-                                autoFocus
-                            />
-                        </div>
-                        <div className="modal-actions">
-                            <button
-                                type="button"
-                                className="btn btn-secondary"
-                                onClick={() => setShowJoinModal(false)}
-                            >
-                                Cancel
-                            </button>
-                            <button type="submit" className="btn btn-primary" disabled={loading}>
-                                {loading ? <span className="spinner"></span> : "Join"}
                             </button>
                         </div>
                     </form>
