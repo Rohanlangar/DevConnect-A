@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chat</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        #chat-log { border: 1px solid #ccc; padding: 10px; background: #f9f9f9; }
+        #chat-message-input { margin-top: 10px; }
+        button { padding: 8px 15px; cursor: pointer; margin-left: 5px; }
+        .header { margin-bottom: 20px; }
+        .error { color: red; padding: 10px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h2>Chat Room</h2>
+    <button id="logout-btn">Logout</button>
+</div>
+
+<div id="error-message"></div>
+
+<textarea id="chat-log" cols="100" rows="20"></textarea><br>
+
+<input id="chat-message-input" type="text" size="100" placeholder="Type a message...">
+<button id="chat-message-submit">Send</button>
+
+{{ room_id|json_script:"room-id" }}
+
+<script>
+
+const roomId = JSON.parse(document.getElementById('room-id').textContent);
+const token = localStorage.getItem('token');
+const errorDiv = document.getElementById('error-message');
+
+if (!token) {
+    errorDiv.className = 'error';
+    errorDiv.textContent = 'Authentication token not found. Please login first.';
+    setTimeout(() => window.location.href = '/', 3000);
+} else {
+    const chatSocket = new WebSocket(
+        "ws://" + window.location.host + "/ws/chat/" + roomId + "/?token=" + token
+    );
+
+    chatSocket.onopen = function(e) {
+        console.log('WebSocket connection established');
+    };
+
+    chatSocket.onmessage = function(e) {
+        const data = JSON.parse(e.data);
+        document.querySelector("#chat-log").value +=
+            data.user + ": " + data.message + "\n";
+        document.querySelector("#chat-log").scrollTop = document.querySelector("#chat-log").scrollHeight;
+    };
+
+    chatSocket.onclose = function(e) {
+        errorDiv.className = 'error';
+        errorDiv.textContent = 'WebSocket closed. Connection lost.';
+        console.error("Socket closed unexpectedly");
+    };
+
+    chatSocket.onerror = function(error) {
+        errorDiv.className = 'error';
+        errorDiv.textContent = 'WebSocket error: ' + error;
+        console.error("WebSocket error:", error);
+    };
+
+    document.querySelector("#chat-message-submit").onclick = function() {
+        const input = document.querySelector("#chat-message-input");
+        const message = input.value;
+
+        if (message.trim()) {
+            chatSocket.send(JSON.stringify({
+                message: message
+            }));
+            input.value = "";
+        }
+    };
+
+    document.getElementById("logout-btn").onclick = function() {
+        localStorage.removeItem('token');
+        window.location.href = '/';
+    };
+}
+
+</script>
+
+</body>
+</html>

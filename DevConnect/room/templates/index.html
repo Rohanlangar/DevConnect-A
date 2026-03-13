@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chat Rooms</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .login-form { margin-bottom: 30px; border: 1px solid #ccc; padding: 15px; }
+        .room-form { border: 1px solid #ccc; padding: 15px; }
+        input { margin: 5px 0; padding: 8px; width: 300px; }
+        button { padding: 8px 15px; cursor: pointer; }
+        .message { margin: 10px 0; padding: 10px; }
+        .error { color: red; }
+        .success { color: green; }
+    </style>
+</head>
+<body>
+
+<div class="login-form">
+    <h3>Login</h3>
+    <input id="username" type="text" placeholder="Username">
+    <input id="password" type="password" placeholder="Password">
+    <button id="login-btn">Login</button>
+    <div id="login-message"></div>
+</div>
+
+<div class="room-form">
+    <h3>Enter Room ID</h3>
+    <input id="room-id-input" type="text" placeholder="Room ID">
+    <button id="room-id-submit">Enter Room</button>
+</div>
+
+<script>
+// Check if already logged in
+if (localStorage.getItem('token')) {
+    document.querySelector('.login-form').style.display = 'none';
+    document.querySelector('.room-form').style.display = 'block';
+}
+
+document.getElementById("login-btn").onclick = async function() {
+    const username = document.getElementById("username").value;
+    const password = document.getElementById("password").value;
+    const messageDiv = document.getElementById("login-message");
+
+    if (!username || !password) {
+        messageDiv.className = 'message error';
+        messageDiv.textContent = 'Please enter username and password';
+        return;
+    }
+
+    try {
+        const response = await fetch('/auth/login/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ username, password })
+        });
+
+        const data = await response.json();
+
+        if (response.ok && data.token) {
+            localStorage.setItem('token', data.token);
+            messageDiv.className = 'message success';
+            messageDiv.textContent = 'Login successful!';
+            document.querySelector('.login-form').style.display = 'none';
+            document.querySelector('.room-form').style.display = 'block';
+        } else {
+            messageDiv.className = 'message error';
+            messageDiv.textContent = data.message || 'Login failed';
+        }
+    } catch (error) {
+        messageDiv.className = 'message error';
+        messageDiv.textContent = 'Error: ' + error.message;
+    }
+};
+
+document.getElementById("room-id-submit").onclick = function() {
+    const roomId = document.getElementById("room-id-input").value;
+    if (roomId) {
+        window.location.pathname = "/room/" + roomId + "/";
+    } else {
+        alert('Please enter a room ID');
+    }
+};
+</script>
+
+</body>
+</html>
