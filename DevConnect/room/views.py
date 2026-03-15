@@ -129,3 +129,17 @@ def room(request, room_id):
 
 def index(request):
     return render(request, "index.html")
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def getRoomMembers(request, roomId):
+    """Get all members of a room (for @mention autocomplete)."""
+    try:
+        room = Room.objects.get(id=roomId)
+    except Room.DoesNotExist:
+        return Response({"error": "Room not found"}, status=404)
+
+    members = room.members.all()
+    data = [{"id": m.id, "username": m.username} for m in members]
+    return Response(data)

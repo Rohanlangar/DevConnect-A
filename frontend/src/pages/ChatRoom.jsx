@@ -12,21 +12,35 @@ export default function ChatRoom() {
     const [currentUser, setCurrentUser] = useState("");
     const wsRef = useRef(null);
     const messagesEndRef = useRef(null);
-    const messagesTopRef = useRef(null);
 
     const [fetchingHistory, setFetchingHistory] = useState(true);
-    // Cursor pagination: URL to fetch the next page of older messages
     const [olderMessagesUrl, setOlderMessagesUrl] = useState(null);
     const [loadingOlder, setLoadingOlder] = useState(false);
-    // Track whether the last update was from loading older messages (to prevent scroll-to-bottom)
     const isLoadingOlderRef = useRef(false);
     const chatContainerRef = useRef(null);
 
-    // Get current username from localStorage or profile
+    // @Mention state
+    const [roomMembers, setRoomMembers] = useState([]);
+    const [mentionQuery, setMentionQuery] = useState(null);  // null = dropdown hidden, "" = show all
+    const [mentionIndex, setMentionIndex] = useState(0);     // keyboard selection index
+    const inputRef = useRef(null);
+
+    // Get current username
     useEffect(() => {
         const storedUser = localStorage.getItem("username");
         if (storedUser) setCurrentUser(storedUser);
     }, []);
+
+    // Fetch room members for @mention autocomplete
+    useEffect(() => {
+        const fetchMembers = async () => {
+            const { ok, data } = await apiFetch(`/room/members/${roomId}/`);
+            if (ok && Array.isArray(data)) {
+                setRoomMembers(data);
+            }
+        };
+        fetchMembers();
+    }, [roomId]);
 
     // Fetch history then connect WebSocket
     useEffect(() => {
@@ -34,20 +48,13 @@ export default function ChatRoom() {
         let isMounted = true;
 
         const initializeChat = async () => {
-            console.log("Initializing chat for roomId:", roomId);
-            // 1. Fetch History (now returns cursor-paginated response)
             try {
                 const { ok, data } = await apiFetch(`/room/getAllMsg/${roomId}/`);
-                
                 if (!isMounted) return;
-
                 if (ok && data) {
-                    // Paginated response: { next, previous, results: [...] }
                     const results = data.results || [];
                     const formattedHistory = results.map(formatMessage);
-                    // Results are newest-first from backend, reverse to show oldest on top
                     setMessages(formattedHistory.reverse());
-                    // "next" in cursor pagination (ordered by -created_at) = older messages
                     setOlderMessagesUrl(data.next || null);
                 }
             } catch (err) {
@@ -58,20 +65,13 @@ export default function ChatRoom() {
 
             if (!isMounted) return;
 
-            // 2. Connect WebSocket
             const wsUrl = getWebSocketURL(roomId);
             ws = new WebSocket(wsUrl);
             wsRef.current = ws;
 
-            ws.onopen = () => {
-                if (isMounted) setConnected(true);
-            };
-            ws.onclose = () => {
-                if (isMounted) setConnected(false);
-            };
-            ws.onerror = () => {
-                if (isMounted) setConnected(false);
-            };
+            ws.onopen = () => { if (isMounted) setConnected(true); };
+            ws.onclose = () => { if (isMounted) setConnected(false); };
+            ws.onerror = () => { if (isMounted) setConnected(false); };
 
             ws.onmessage = (e) => {
                 const data = JSON.parse(e.data);
@@ -80,55 +80,34 @@ export default function ChatRoom() {
                     {
                         user: data.user,
                         message: data.message,
-                        time: new Date().toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                        }),
+                        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
                     },
                 ]);
             };
         };
 
         initializeChat();
-
-        return () => {
-            isMounted = false;
-            if (ws) ws.close();
-        };
+        return () => { isMounted = false; if (ws) ws.close(); };
     }, [roomId]);
 
-    // Auto-scroll: only scroll to bottom for NEW messages, not when loading older ones
+    // Auto-scroll (skip for older messages)
     useEffect(() => {
         if (isLoadingOlderRef.current) {
-            // After loading older messages, do NOT scroll to bottom.
-            // The scroll position is preserved by the loadOlderMessages function.
             isLoadingOlderRef.current = false;
             return;
         }
-        // For new messages (WebSocket or initial load), scroll to bottom
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
 
-    // Helper to format a message object from the API
     const formatMessage = (msg) => {
         const dateObj = new Date(msg.created_at);
-        const timeStr = isNaN(dateObj) ? "" : dateObj.toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-        });
-        return {
-            user: msg.sender,
-            message: msg.content,
-            time: timeStr,
-        };
+        const timeStr = isNaN(dateObj) ? "" : dateObj.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        return { user: msg.sender, message: msg.content, time: timeStr };
     };
 
-    // Load older messages using the cursor pagination URL
     const loadOlderMessages = async () => {
         if (!olderMessagesUrl || loadingOlder) return;
         setLoadingOlder(true);
-
-        // Save scroll position BEFORE adding older messages
         const container = chatContainerRef.current;
         const prevScrollHeight = container ? container.scrollHeight : 0;
 
@@ -140,23 +119,14 @@ export default function ChatRoom() {
                 },
             });
             const data = await res.json();
-
             if (res.ok && data.results) {
                 const olderFormatted = data.results.map(formatMessage).reverse();
-
-                // Tell the auto-scroll effect to NOT scroll to bottom
                 isLoadingOlderRef.current = true;
-
-                // Prepend older messages
                 setMessages((prev) => [...olderFormatted, ...prev]);
                 setOlderMessagesUrl(data.next || null);
-
-                // After React re-renders, restore scroll so user stays at the same position
-                // The new content pushes everything down, so we offset by the height difference
                 requestAnimationFrame(() => {
                     if (container) {
-                        const newScrollHeight = container.scrollHeight;
-                        container.scrollTop = newScrollHeight - prevScrollHeight;
+                        container.scrollTop = container.scrollHeight - prevScrollHeight;
                     }
                 });
             }
@@ -167,14 +137,117 @@ export default function ChatRoom() {
         }
     };
 
+    // ─── @Mention Logic ───────────────────────────────────────────
+
+    // Filter members based on what user typed after @
+    const filteredMembers = mentionQuery !== null
+        ? roomMembers.filter((m) =>
+            m.username.toLowerCase().startsWith(mentionQuery.toLowerCase()) &&
+            m.username !== currentUser  // don't suggest yourself
+        )
+        : [];
+
+    // Handle input change: detect @ trigger
+    const handleInputChange = (e) => {
+        const value = e.target.value;
+        setInput(value);
+
+        // Find the last @ that isn't part of a completed mention
+        const cursorPos = e.target.selectionStart;
+        const textBeforeCursor = value.slice(0, cursorPos);
+        const lastAtIndex = textBeforeCursor.lastIndexOf("@");
+
+        if (lastAtIndex !== -1) {
+            // Check there's no space between @ and cursor (user is still typing the name)
+            const textAfterAt = textBeforeCursor.slice(lastAtIndex + 1);
+            if (!textAfterAt.includes(" ")) {
+                setMentionQuery(textAfterAt);
+                setMentionIndex(0);
+                return;
+            }
+        }
+        // No active @ trigger
+        setMentionQuery(null);
+    };
+
+    // Handle keyboard navigation in the mention dropdown
+    const handleKeyDown = (e) => {
+        if (mentionQuery === null || filteredMembers.length === 0) return;
+
+        if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setMentionIndex((prev) => (prev + 1) % filteredMembers.length);
+        } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setMentionIndex((prev) => (prev - 1 + filteredMembers.length) % filteredMembers.length);
+        } else if (e.key === "Enter" && mentionQuery !== null && filteredMembers.length > 0) {
+            e.preventDefault();
+            insertMention(filteredMembers[mentionIndex].username);
+        } else if (e.key === "Escape") {
+            setMentionQuery(null);
+        }
+    };
+
+    // Insert the selected username into the input
+    const insertMention = (username) => {
+        const cursorPos = inputRef.current?.selectionStart || input.length;
+        const textBeforeCursor = input.slice(0, cursorPos);
+        const lastAtIndex = textBeforeCursor.lastIndexOf("@");
+
+        if (lastAtIndex !== -1) {
+            const before = input.slice(0, lastAtIndex);
+            const after = input.slice(cursorPos);
+            const newValue = `${before}@${username} ${after}`;
+            setInput(newValue);
+
+            // Move cursor to after the inserted mention
+            setTimeout(() => {
+                const newCursorPos = lastAtIndex + username.length + 2; // @ + name + space
+                inputRef.current?.setSelectionRange(newCursorPos, newCursorPos);
+                inputRef.current?.focus();
+            }, 0);
+        }
+        setMentionQuery(null);
+    };
+
+    // Render message text with highlighted @mentions
+    const renderMessageContent = (text) => {
+        // Match @username patterns (word characters after @)
+        const parts = text.split(/(@\w+)/g);
+        return parts.map((part, i) => {
+            if (part.startsWith("@")) {
+                const username = part.slice(1);
+                const isMember = roomMembers.some((m) => m.username === username);
+                const isMe = username === currentUser;
+                return (
+                    <span
+                        key={i}
+                        className={`mention-tag ${isMe ? "mention-me" : isMember ? "mention-other" : ""}`}
+                    >
+                        {part}
+                    </span>
+                );
+            }
+            return part;
+        });
+    };
+
+    // ─── Send ─────────────────────────────────────────────────────
+
     const sendMessage = (e) => {
         e.preventDefault();
-        if (!input.trim() || !wsRef.current || wsRef.current.readyState !== 1)
+        if (mentionQuery !== null && filteredMembers.length > 0) {
+            // If dropdown is open and user presses Enter, insert mention instead of sending
+            insertMention(filteredMembers[mentionIndex].username);
             return;
-
+        }
+        if (!input.trim() || !wsRef.current || wsRef.current.readyState !== 1) return;
         wsRef.current.send(JSON.stringify({ message: input.trim() }));
         setInput("");
+        setMentionQuery(null);
     };
+
+    // ─── Render ───────────────────────────────────────────────────
 
     return (
         <div className="chatroom">
@@ -213,7 +286,6 @@ export default function ChatRoom() {
                     </div>
                 ) : (
                     <>
-                        {/* Load Older Messages button - shown when there are more pages */}
                         {olderMessagesUrl && (
                             <div style={{ textAlign: "center", padding: "12px 0" }}>
                                 <button
@@ -240,7 +312,9 @@ export default function ChatRoom() {
                                     <span className="message-sender">
                                         @{msg.user}
                                     </span>
-                                    <div className="message-bubble">{msg.message}</div>
+                                    <div className="message-bubble">
+                                        {renderMessageContent(msg.message)}
+                                    </div>
                                     <span className="message-time">{msg.time}</span>
                                 </div>
                             );
@@ -250,30 +324,54 @@ export default function ChatRoom() {
                 <div ref={messagesEndRef} />
             </div>
 
-            {/* Input */}
-            <form className="chat-input-bar" onSubmit={sendMessage}>
-                <input
-                    type="text"
-                    className="chat-input"
-                    placeholder={
-                        connected ? "Type a message..." : "Connecting..."
-                    }
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    disabled={!connected}
-                    autoFocus
-                />
-                <button
-                    type="submit"
-                    className="chat-send-btn"
-                    disabled={!connected || !input.trim()}
-                >
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="22" y1="2" x2="11" y2="13" />
-                        <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                    </svg>
-                </button>
-            </form>
+            {/* Input area with @mention dropdown */}
+            <div className="chat-input-wrapper">
+                {/* @Mention Dropdown */}
+                {mentionQuery !== null && filteredMembers.length > 0 && (
+                    <div className="mention-dropdown">
+                        {filteredMembers.map((member, idx) => (
+                            <div
+                                key={member.id}
+                                className={`mention-item ${idx === mentionIndex ? "mention-item-active" : ""}`}
+                                onMouseDown={(e) => {
+                                    e.preventDefault(); // prevent input blur
+                                    insertMention(member.username);
+                                }}
+                                onMouseEnter={() => setMentionIndex(idx)}
+                            >
+                                <span className="mention-item-avatar">
+                                    {member.username.charAt(0).toUpperCase()}
+                                </span>
+                                <span className="mention-item-name">@{member.username}</span>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                <form className="chat-input-bar" onSubmit={sendMessage}>
+                    <input
+                        ref={inputRef}
+                        type="text"
+                        className="chat-input"
+                        placeholder={connected ? "Type @ to mention someone..." : "Connecting..."}
+                        value={input}
+                        onChange={handleInputChange}
+                        onKeyDown={handleKeyDown}
+                        disabled={!connected}
+                        autoFocus
+                    />
+                    <button
+                        type="submit"
+                        className="chat-send-btn"
+                        disabled={!connected || !input.trim()}
+                    >
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="22" y1="2" x2="11" y2="13" />
+                            <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                        </svg>
+                    </button>
+                </form>
+            </div>
         </div>
     );
 }

@@ -8,5 +8,6 @@ urlpatterns = [
     path("getAllRoom/",views.getAllRoom),
     path("JoinedRooms/",views.getRoomsUserHaveJoined),
     path("getAllMsg/<str:roomId>/",views.getAllMsg),
+    path("members/<str:roomId>/",views.getRoomMembers),
     path("<str:room_id>/", views.room, name="room"),
 ]

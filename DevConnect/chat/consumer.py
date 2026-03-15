@@ -2,7 +2,7 @@ import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from .models import Room, Message
-
+from chat.tasks import send_notification
 
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -69,8 +69,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def save_message(self, message):
         room = Room.objects.get(id=self.room_id)
-        Message.objects.create(
+        msg = Message.objects.create(
             room=room,
             sender=self.user,
             content=message,
         )
+
+        send_notification.delay(msg.id)
+
+
+
