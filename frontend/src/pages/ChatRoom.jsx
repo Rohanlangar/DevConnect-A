@@ -12,8 +12,15 @@ export default function ChatRoom() {
     const [currentUser, setCurrentUser] = useState("");
     const wsRef = useRef(null);
     const messagesEndRef = useRef(null);
+    const messagesTopRef = useRef(null);
 
     const [fetchingHistory, setFetchingHistory] = useState(true);
+    // Cursor pagination: URL to fetch the next page of older messages
+    const [olderMessagesUrl, setOlderMessagesUrl] = useState(null);
+    const [loadingOlder, setLoadingOlder] = useState(false);
+    // Track whether the last update was from loading older messages (to prevent scroll-to-bottom)
+    const isLoadingOlderRef = useRef(false);
+    const chatContainerRef = useRef(null);
 
     // Get current username from localStorage or profile
     useEffect(() => {
@@ -28,30 +35,20 @@ export default function ChatRoom() {
 
         const initializeChat = async () => {
             console.log("Initializing chat for roomId:", roomId);
-            // 1. Fetch History
+            // 1. Fetch History (now returns cursor-paginated response)
             try {
-                console.log("Fetching history from:", `/room/getAllMsg/${roomId}/`);
                 const { ok, data } = await apiFetch(`/room/getAllMsg/${roomId}/`);
-                console.log("Fetch history response:", { ok, data });
                 
-                if (!isMounted) return; // Stop if component unmounted during fetch
+                if (!isMounted) return;
 
-                if (ok && Array.isArray(data)) {
-                    const formattedHistory = data.map(msg => {
-                        // The backend returns timestamp as msg.created_at
-                        const dateObj = new Date(msg.created_at);
-                        const timeStr = isNaN(dateObj) ? "" : dateObj.toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                        });
-
-                        return {
-                            user: msg.sender, // Backend returns sender ID or string
-                            message: msg.content,
-                            time: timeStr
-                        };
-                    });
-                    setMessages(formattedHistory);
+                if (ok && data) {
+                    // Paginated response: { next, previous, results: [...] }
+                    const results = data.results || [];
+                    const formattedHistory = results.map(formatMessage);
+                    // Results are newest-first from backend, reverse to show oldest on top
+                    setMessages(formattedHistory.reverse());
+                    // "next" in cursor pagination (ordered by -created_at) = older messages
+                    setOlderMessagesUrl(data.next || null);
                 }
             } catch (err) {
                 if (isMounted) console.error("Failed to load message history:", err);
@@ -100,10 +97,75 @@ export default function ChatRoom() {
         };
     }, [roomId]);
 
-    // Auto-scroll
+    // Auto-scroll: only scroll to bottom for NEW messages, not when loading older ones
     useEffect(() => {
+        if (isLoadingOlderRef.current) {
+            // After loading older messages, do NOT scroll to bottom.
+            // The scroll position is preserved by the loadOlderMessages function.
+            isLoadingOlderRef.current = false;
+            return;
+        }
+        // For new messages (WebSocket or initial load), scroll to bottom
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
+
+    // Helper to format a message object from the API
+    const formatMessage = (msg) => {
+        const dateObj = new Date(msg.created_at);
+        const timeStr = isNaN(dateObj) ? "" : dateObj.toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+        });
+        return {
+            user: msg.sender,
+            message: msg.content,
+            time: timeStr,
+        };
+    };
+
+    // Load older messages using the cursor pagination URL
+    const loadOlderMessages = async () => {
+        if (!olderMessagesUrl || loadingOlder) return;
+        setLoadingOlder(true);
+
+        // Save scroll position BEFORE adding older messages
+        const container = chatContainerRef.current;
+        const prevScrollHeight = container ? container.scrollHeight : 0;
+
+        try {
+            const res = await fetch(olderMessagesUrl, {
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Token ${localStorage.getItem("token")}`,
+                },
+            });
+            const data = await res.json();
+
+            if (res.ok && data.results) {
+                const olderFormatted = data.results.map(formatMessage).reverse();
+
+                // Tell the auto-scroll effect to NOT scroll to bottom
+                isLoadingOlderRef.current = true;
+
+                // Prepend older messages
+                setMessages((prev) => [...olderFormatted, ...prev]);
+                setOlderMessagesUrl(data.next || null);
+
+                // After React re-renders, restore scroll so user stays at the same position
+                // The new content pushes everything down, so we offset by the height difference
+                requestAnimationFrame(() => {
+                    if (container) {
+                        const newScrollHeight = container.scrollHeight;
+                        container.scrollTop = newScrollHeight - prevScrollHeight;
+                    }
+                });
+            }
+        } catch (err) {
+            console.error("Failed to load older messages:", err);
+        } finally {
+            setLoadingOlder(false);
+        }
+    };
 
     const sendMessage = (e) => {
         e.preventDefault();
@@ -111,10 +173,6 @@ export default function ChatRoom() {
             return;
 
         wsRef.current.send(JSON.stringify({ message: input.trim() }));
-        // Store username from first sent message
-        if (!currentUser) {
-            // We'll pick it up from the echo
-        }
         setInput("");
     };
 
@@ -140,7 +198,7 @@ export default function ChatRoom() {
             </div>
 
             {/* Messages */}
-            <div className="chat-messages">
+            <div className="chat-messages" ref={chatContainerRef}>
                 {fetchingHistory ? (
                     <div className="chat-empty">
                         <span className="spinner"></span>
@@ -154,21 +212,40 @@ export default function ChatRoom() {
                         </div>
                     </div>
                 ) : (
-                    messages.map((msg, idx) => {
-                        const isOwn = currentUser && msg.user === currentUser;
-                        return (
-                            <div
-                                key={idx}
-                                className={`message-group ${isOwn ? "own" : "other"}`}
-                            >
-                                <span className="message-sender">
-                                    @{msg.user}
-                                </span>
-                                <div className="message-bubble">{msg.message}</div>
-                                <span className="message-time">{msg.time}</span>
+                    <>
+                        {/* Load Older Messages button - shown when there are more pages */}
+                        {olderMessagesUrl && (
+                            <div style={{ textAlign: "center", padding: "12px 0" }}>
+                                <button
+                                    className="btn btn-secondary"
+                                    onClick={loadOlderMessages}
+                                    disabled={loadingOlder}
+                                    style={{ fontSize: "0.85rem", padding: "6px 16px" }}
+                                >
+                                    {loadingOlder ? (
+                                        <span className="spinner" style={{ width: 14, height: 14 }} />
+                                    ) : (
+                                        "↑ Load older messages"
+                                    )}
+                                </button>
                             </div>
-                        );
-                    })
+                        )}
+                        {messages.map((msg, idx) => {
+                            const isOwn = currentUser && msg.user === currentUser;
+                            return (
+                                <div
+                                    key={idx}
+                                    className={`message-group ${isOwn ? "own" : "other"}`}
+                                >
+                                    <span className="message-sender">
+                                        @{msg.user}
+                                    </span>
+                                    <div className="message-bubble">{msg.message}</div>
+                                    <span className="message-time">{msg.time}</span>
+                                </div>
+                            );
+                        })}
+                    </>
                 )}
                 <div ref={messagesEndRef} />
             </div>

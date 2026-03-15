@@ -120,6 +120,14 @@ export default function Dashboard() {
             <div className="room-desc">
                 {room.description || "No description provided"}
             </div>
+            <div className="room-meta-row" style={{ display: 'flex', gap: '12px', fontSize: '0.8rem', color: 'var(--text-muted)', padding: '4px 0' }}>
+                {room.member_count !== undefined && (
+                    <span>👥 {room.member_count} member{room.member_count !== 1 ? 's' : ''}</span>
+                )}
+                {room.created_by && (
+                    <span>by @{room.created_by}</span>
+                )}
+            </div>
             <div className="room-footer" style={{ borderTop: isJoined ? '' : 'none' }}>
                 {isJoined ? (
                     <>
