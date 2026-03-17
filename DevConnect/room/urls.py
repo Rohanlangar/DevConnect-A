@@ -9,5 +9,9 @@ urlpatterns = [
     path("JoinedRooms/",views.getRoomsUserHaveJoined),
     path("getAllMsg/<str:roomId>/",views.getAllMsg),
     path("members/<str:roomId>/",views.getRoomMembers),
+    # Task endpoints
+    path("tasks/<str:roomId>/", views.get_tasks),
+    path("tasks/<str:roomId>/create/", views.create_task),
+    path("tasks/update/<int:taskId>/", views.update_task_status),
     path("<str:room_id>/", views.room, name="room"),
 ]

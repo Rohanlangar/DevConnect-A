@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { apiFetch, getWebSocketURL } from "../services/api";
+import TaskPanel from "../components/TaskPanel";
 import "./ChatRoom.css";
 
 export default function ChatRoom() {
@@ -24,6 +25,9 @@ export default function ChatRoom() {
     const [mentionQuery, setMentionQuery] = useState(null);  // null = dropdown hidden, "" = show all
     const [mentionIndex, setMentionIndex] = useState(0);     // keyboard selection index
     const inputRef = useRef(null);
+
+    // Task panel toggle
+    const [showTasks, setShowTasks] = useState(false);
 
     // Get current username
     useEffect(() => {
@@ -265,10 +269,21 @@ export default function ChatRoom() {
                     </div>
                 </div>
                 <div className="chat-status">
+                    <button
+                        className={`chat-tasks-toggle ${showTasks ? "active" : ""}`}
+                        onClick={() => setShowTasks(!showTasks)}
+                        title="Toggle tasks panel"
+                    >
+                        📋 Tasks
+                    </button>
                     <span className={`status-dot ${connected ? "online" : "offline"}`}></span>
                     {connected ? "Connected" : "Disconnected"}
                 </div>
             </div>
+
+            <div className={`chat-layout ${showTasks ? "with-tasks" : ""}`}>
+            {/* Chat column */}
+            <div className="chat-main-col">
 
             {/* Messages */}
             <div className="chat-messages" ref={chatContainerRef}>
@@ -372,6 +387,15 @@ export default function ChatRoom() {
                     </button>
                 </form>
             </div>
+            </div>{/* /chat-main-col */}
+
+            {/* Task Panel (sidebar) */}
+            {showTasks && (
+                <div className="task-panel-col">
+                    <TaskPanel roomId={roomId} currentUser={currentUser} />
+                </div>
+            )}
+            </div>{/* /chat-layout */}
         </div>
     );
 }
