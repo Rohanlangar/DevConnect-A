@@ -5,6 +5,9 @@ from .models import Room, Message
 from chat.tasks import send_notification
 
 class ChatConsumer(AsyncWebsocketConsumer):
+
+    online_users = {}
+
     async def connect(self):
         self.room_id = self.scope["url_route"]["kwargs"]["room_id"]
         self.user = self.scope["user"]
@@ -28,13 +31,61 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         await self.accept()
 
+        if self.room_group_name not in ChatConsumer.online_users:
+            ChatConsumer.online_users[self.room_group_name] = set()
+        ChatConsumer.online_users[self.room_group_name].add(self.user.username)
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                "type" : "presence_update",
+                "online_users":
+                list(ChatConsumer.online_users[self.room_group_name])
+            },
+        )
+
     async def disconnect(self, close_code):
         await self.channel_layer.group_discard(
             self.room_group_name, self.channel_name
         )
 
+        if self.room_group_name in ChatConsumer.online_users:
+            ChatConsumer.online_users[self.room_group_name].discard(self.user.username)
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                "type": "presence_update",
+                "online_users": list(
+                    ChatConsumer.online_users.get(self.room_group_name, set())
+                ),
+            },
+        )
+
+    
+    async def presence_update(self, event):
+        await self.send(text_data=json.dumps({
+            "type": "presence",
+            "online_users": event["online_users"],
+        }))
+
+
+
+
     async def receive(self, text_data):
         data = json.loads(text_data)
+
+        if data.get("type") == "typing":
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    "type": "typing_status",
+                    "user": self.user.username,
+                    "is_typing": data.get("is_typing", False),
+                },
+            )
+            return  # ← must be INSIDE the if block!
+
         message = data["message"]
 
         await self.save_message(message)
@@ -47,6 +98,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "user": self.user.username,
             },
         )
+
+
+    async def typing_status(self,event):
+        if event["user"] != self.user.username:
+            await self.send(text_data=json.dumps({
+                "type": "typing",
+                "user": event["user"],
+                "is_typing": event["is_typing"],
+            }))
+
 
     async def chat_message(self, event):
         await self.send(

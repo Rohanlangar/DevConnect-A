@@ -29,6 +29,11 @@ export default function ChatRoom() {
     // Task panel toggle
     const [showTasks, setShowTasks] = useState(false);
 
+    // Online presence + typing
+    const [onlineUsers, setOnlineUsers] = useState([]);
+    const [typingUsers, setTypingUsers] = useState(new Set());
+    const typingTimeoutRef = useRef(null);
+
     // Get current username
     useEffect(() => {
         const storedUser = localStorage.getItem("username");
@@ -79,14 +84,35 @@ export default function ChatRoom() {
 
             ws.onmessage = (e) => {
                 const data = JSON.parse(e.data);
-                setMessages((prev) => [
-                    ...prev,
-                    {
-                        user: data.user,
-                        message: data.message,
-                        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-                    },
-                ]);
+
+                if (data.type === "presence") {
+                    setOnlineUsers(data.online_users);
+                } else if (data.type === "typing") {
+                    setTypingUsers((prev) => {
+                        const next = new Set(prev);
+                        if (data.is_typing) {
+                            next.add(data.user);
+                        } else {
+                            next.delete(data.user);
+                        }
+                        return next;
+                    });
+                } else {
+                    // Chat message — also clear sender from typing
+                    setTypingUsers((prev) => {
+                        const next = new Set(prev);
+                        next.delete(data.user);
+                        return next;
+                    });
+                    setMessages((prev) => [
+                        ...prev,
+                        {
+                            user: data.user,
+                            message: data.message,
+                            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                        },
+                    ]);
+                }
             };
         };
 
@@ -151,10 +177,19 @@ export default function ChatRoom() {
         )
         : [];
 
-    // Handle input change: detect @ trigger
+    // Handle input change: detect @ trigger + send typing event
     const handleInputChange = (e) => {
         const value = e.target.value;
         setInput(value);
+
+        // ── Send typing indicator ──
+        if (wsRef.current?.readyState === 1) {
+            wsRef.current.send(JSON.stringify({ type: "typing", is_typing: true }));
+            clearTimeout(typingTimeoutRef.current);
+            typingTimeoutRef.current = setTimeout(() => {
+                wsRef.current?.send(JSON.stringify({ type: "typing", is_typing: false }));
+            }, 1500);
+        }
 
         // Find the last @ that isn't part of a completed mention
         const cursorPos = e.target.selectionStart;
@@ -269,6 +304,9 @@ export default function ChatRoom() {
                     </div>
                 </div>
                 <div className="chat-status">
+                    <span className="online-indicator" title={onlineUsers.join(", ")}>
+                        👥 {onlineUsers.length} online
+                    </span>
                     <button
                         className={`chat-tasks-toggle ${showTasks ? "active" : ""}`}
                         onClick={() => setShowTasks(!showTasks)}
@@ -360,6 +398,16 @@ export default function ChatRoom() {
                                 <span className="mention-item-name">@{member.username}</span>
                             </div>
                         ))}
+                    </div>
+                )}
+
+                {/* Typing indicator */}
+                {typingUsers.size > 0 && (
+                    <div className="typing-indicator">
+                        <span className="typing-dots">
+                            <span /><span /><span />
+                        </span>
+                        {Array.from(typingUsers).join(", ")} {typingUsers.size === 1 ? "is" : "are"} typing...
                     </div>
                 )}
 
